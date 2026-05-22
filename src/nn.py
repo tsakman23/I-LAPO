@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn as nn
+from src.spectral_norm_fc import spectral_norm_fc
 from vector_quantize_pytorch import FSQ
 
 from .utils import weight_init
@@ -147,6 +148,54 @@ class DecoderBlock(nn.Module):
     def get_output_shape(self):
         _c, h, w = self._input_shape
         return (self._out_channels, h * 2, w * 2)
+    
+
+class InvertibleResBlock(nn.Module):
+    """
+    One block of i-ResNet: y = x + g(x), bijective iff Lip(g) < 1.
+    Enforced via spectral normalization on every linear layer.
+    """
+    def __init__(self, dim: int, hidden_dim: int = 128, coeff: float = 0.8, n_power_iterations: int = 10):
+        super().__init__()
+        self.coeff = coeff
+        self.g = nn.Sequential(
+            spectral_norm_fc(
+                nn.Linear(dim, hidden_dim), 
+                coeff=coeff, 
+                n_power_iterations=n_power_iterations
+            ),
+            nn.ELU(), # ELU is smooth, continuous gradient, and backprop through fixed-point inverse iter will produce cleaner grads than ReLU.
+            spectral_norm_fc(
+                nn.Linear(hidden_dim, hidden_dim), 
+                coeff=coeff, 
+                n_power_iterations=n_power_iterations
+            ),
+            nn.ELU(),
+            spectral_norm_fc(
+                nn.Linear(hidden_dim, dim), 
+                coeff=coeff, 
+                n_power_iterations=n_power_iterations
+            ),
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # y = x + g(x), Lip(g) <= coeff < 1 => invertible
+        return x + self.g(x)
+    
+    @torch.no_grad()
+    def inverse(self, y: torch.Tensor, max_iter: int = 50, tol: float = 1e-4) -> torch.Tensor:
+        """Fixed-point iteration to compute inverse.
+        Solves for x in y = x + g(x) => x = y - g(x).
+        x_{k+1} = y - coeff * g(x_k)
+        No gradients: treat as numerical solver only to avoid exploding/vanishing gradients (Behrmann 2019/2021).
+        """
+        x = y.clone()  # Initial guess
+        for _ in range(max_iter):
+            x_next = y - self.g(x)
+            if (x_next - x).norm(dim=-1).max() < tol:
+                return x_next
+            x = x_next
+        return x
 
 
 class Actor(nn.Module):
@@ -208,6 +257,58 @@ class ActionDecoder(nn.Module):
         # true_act_pred = self.model(hidden)
         true_act_pred = self.model(latent_act)
         return true_act_pred
+
+
+class IResNetDecoder(nn.Module):
+    """
+    Bijective decoder f: R^d -> R^d where d = d_z = d_a NECESSARY for invertibility.
+    Can be used to decode latent actions into true actions, while still allowing for exact inference of latent actions from true actions via the inverse.
+    Composed of n_blocks invertible residual blocks, which are guaranteed to be bijective if the Lipschitz constant of the residual function is less than 1 (enforced via spectral normalization and rescaling).
+    
+    Args:
+        act_dim: Dimension of both latent action space AND true action space.
+                 Must equal d_z == d_a.
+        hidden_dim: Width of the inner layers of the residual function g in each i-ResNet block (MLP).
+        n_blocks: Number of stacked i-ResNet blocks.
+        n_power_iterations: Number of power iterations for spectral norm approximation.
+    """
+    def __init__(self, act_dim: int, 
+                 hidden_dim: int = 128, 
+                 n_blocks: int = 3, 
+                 coeff: float = 0.8, 
+                 n_power_iterations: int = 10):
+        super().__init__()
+        if act_dim <= 0:
+            raise ValueError(f"act_dim must be positive, got {act_dim}")
+        self.act_dim = act_dim
+        self.hidden_dim = hidden_dim
+        
+        self.blocks = nn.ModuleList([
+            InvertibleResBlock(
+                dim=act_dim, 
+                hidden_dim=hidden_dim, 
+                coeff=coeff, 
+                n_power_iterations=n_power_iterations
+            )
+            for _ in range(n_blocks)
+        ])
+        
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """f(z) -> a"""
+        a = z
+        for block in self.blocks:
+            a = block(a)
+        return a
+    
+    @torch.no_grad()
+    def inverse(self, a: torch.Tensor, 
+                max_iter: int = 50, 
+                tol: float = 1e-4) -> torch.Tensor:
+        """f^{-1}(a) -> z via sequential fixed-point inversion."""
+        z = a.clone()
+        for block in reversed(self.blocks):
+            z = block.inverse(z, max_iter=max_iter, tol=tol)
+        return z
 
 
 # IDM: (s_t, s_t+1) -> a_t
@@ -528,6 +629,65 @@ class LAOMWithLabels(nn.Module):
         obs_emb, next_obs_emb = self.encoder(torch.concat([obs, next_obs])).split(obs.shape[0])
         latent_action = self.idm_head(obs_emb.flatten(1), next_obs_emb.flatten(1))
         return latent_action
+    
+    
+class LAOMWithLabelsInvertible(LAOMWithLabels):
+    def __init__(
+        self,
+        inv_stage,
+        shape,
+        true_act_dim,
+        latent_act_dim,
+        ires_hidden_dim=128,
+        ires_n_blocks=3,
+        ires_n_power_iter=10,
+        ires_coeff=0.8,
+        encoder_scale=1,
+        encoder_channels=(16, 32, 64, 128, 256),
+        encoder_num_res_blocks=1,
+        encoder_dropout=0.0,
+        encoder_norm_out=True,
+        act_head_dim=512,
+        act_head_dropout=0.0,
+        obs_head_dim=512,
+        obs_head_dropout=0.0,
+    ):
+        super().__init__(
+            shape=shape,
+            true_act_dim=true_act_dim,
+            latent_act_dim=latent_act_dim,
+            encoder_scale=encoder_scale,
+            encoder_channels=encoder_channels,
+            encoder_num_res_blocks=encoder_num_res_blocks,
+            encoder_dropout=encoder_dropout,
+            encoder_norm_out=encoder_norm_out,
+            act_head_dim=act_head_dim,
+            act_head_dropout=act_head_dropout,
+            obs_head_dim=obs_head_dim,
+            obs_head_dropout=obs_head_dropout,
+        )
+        
+        # Checks
+        if inv_stage not in [0, 1, 3]:
+            raise ValueError(f"inv_stage must be one of [0, 1, 3], got {inv_stage}. Select 0 for full invertibility, 1 for Stage 1, and 3 for Stage 3 (0 default).")
+        
+        if inv_stage in [0, 1]:
+            if latent_act_dim != true_act_dim:
+                raise ValueError(f"For invertibility, latent_act_dim must equal true_act_dim, got {latent_act_dim} and {true_act_dim}")
+
+            self.true_actions_head = IResNetDecoder(
+                act_dim=true_act_dim,
+                hidden_dim=ires_hidden_dim,
+                n_blocks=ires_n_blocks,
+                coeff=ires_coeff,
+                n_power_iterations=ires_n_power_iter,
+            )
+        else:
+            self.true_actions_head = nn.Linear(latent_act_dim, true_act_dim)
+            
+        # Note: weight_init from parent __init__ was applied to discarded nn.Linear.
+        # IResNetDecoder is intentionally left with default PyTorch init +
+        # spectral normalization - do not apply weight_init here.
 
 
 class IDMLabels(nn.Module):
