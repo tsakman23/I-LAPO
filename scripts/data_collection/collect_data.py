@@ -127,7 +127,6 @@ def main(args: Args):
             )
             group.attrs["traj_return"] = traj_return
             dataset_returns.append(traj_return)
-            print(f"Collected trajectory {idx}.")
 
         df.attrs["dataset_return"] = np.mean(dataset_returns)
 
