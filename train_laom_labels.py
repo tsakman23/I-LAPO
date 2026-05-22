@@ -3,7 +3,6 @@ import time
 import uuid
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Optional
 
 import numpy as np
 import pyrallis
@@ -14,9 +13,11 @@ import torchinfo
 import wandb
 from pyrallis import field
 from torch.utils.data import DataLoader
-from tqdm import trange
+from tqdm import trange, tqdm
+from sklearn.metrics import r2_score
 
 from src.augmentations import Augmenter
+from src.configs import BCConfig, DecoderConfig, LAOMConfigBase
 from src.nn import ActionDecoder, Actor, LAOMWithLabels
 from src.scheduler import linear_annealing_with_warmup
 from src.utils import (
@@ -39,69 +40,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 @dataclass
-class LAOMConfig:
-    num_epochs: int = 100
-    batch_size: int = 256
-    labeled_batch_size: int = 256
-    labeled_loss_coef: float = 0.05
-    cosine_loss: bool = False
-    use_aug: bool = False
-    future_obs_offset: int = 1
-    learning_rate: float = 3e-4
-    weight_decay: float = 0.0
-    warmup_epochs: int = 5
-    grad_norm: Optional[float] = None
-    latent_action_dim: int = 256
-    act_head_dim: int = 512
-    act_head_dropout: float = 0.0
-    obs_head_dim: int = 512
-    obs_head_dropout: float = 0.0
-    encoder_scale: int = 1
-    encoder_num_res_blocks: int = 1
-    encoder_dropout: float = 0.0
-    encoder_norm_out: bool = True
-    encoder_deep: bool = True
-    target_tau: float = 0.01
-    target_update_every: int = 1
-    frame_stack: int = 3
-    data_path: str = "data/test.hdf5"
-    eval_data_path: Optional[str] = None
-    labeled_data_path: str = "data/labeled_test.hdf5"
-
-
-@dataclass
-class BCConfig:
-    num_epochs: int = 1
-    batch_size: int = 64
-    learning_rate: float = 3e-4
-    weight_decay: float = 0.0
-    warmup_epochs: int = 5
-    encoder_scale: int = 1
-    encoder_num_res_blocks: int = 2
-    encoder_deep: bool = False
-    dropout: float = 0.0
-    use_aug: bool = True
-    frame_stack: int = 3
-    data_path: str = "data/test.hdf5"
-    dcs_backgrounds_path: str = "DAVIS/JPEGImages/480p"
-    dcs_backgrounds_split: str = "train"
-    eval_episodes: int = 10
-    eval_seed: int = 0
-
-
-@dataclass
-class DecoderConfig:
-    total_updates: int = 1
-    batch_size: int = 64
-    learning_rate: float = 3e-4
-    weight_decay: float = 0.0
-    warmup_epochs: int = 5
-    hidden_dim: int = 128
-    use_aug: bool = True
-    dcs_backgrounds_path: str = "DAVIS/JPEGImages/480p"
-    dcs_backgrounds_split: str = "train"
-    eval_episodes: int = 10
-    eval_seed: int = 0
+class LAOMConfig(LAOMConfigBase):
+    pass
 
 
 @dataclass
@@ -116,7 +56,7 @@ class Config:
     decoder: DecoderConfig = field(default_factory=DecoderConfig)
 
     def __post_init__(self):
-        self.name = f"{self.name}-{str(uuid.uuid4())}"
+        self.name = f"{self.name}-la_dim={self.lapo.latent_action_dim}-lab_loss_coef={self.lapo.labeled_loss_coef}-seed={self.seed}-{uuid.uuid4().hex[:6]}"
         # coupling labeled dataset for laom pretraining and action decoder finetuning
         self.decoder.data_path = self.lapo.labeled_data_path
 
@@ -225,7 +165,7 @@ def train_laom(config: LAOMConfig):
     labeled_dataloader_iter = iter(labeled_dataloader)
     for epoch in trange(config.num_epochs, desc="Epochs"):
         lapo.train()
-        for i, batch in enumerate(dataloader):
+        for i, batch in enumerate(tqdm(dataloader, desc="Batches", leave=False)):
             total_tokens += config.batch_size
             total_iterations += 1
 
@@ -308,6 +248,13 @@ def train_laom(config: LAOMConfig):
             act_probe_optim.zero_grad(set_to_none=True)
             act_probe_loss.backward()
             act_probe_optim.step()
+            
+            act_probe_r2 = None
+            if total_iterations % 100 == 0:
+                # R^2 - computed outside autocast to stay in float32 for sklearn
+                _pred = pred_action.detach().float().cpu().numpy()
+                _true = debug_actions.detach().float().cpu().numpy()
+                act_probe_r2 = r2_score(_true, _pred, multioutput="uniform_average")
 
             with torch.autocast(DEVICE, dtype=torch.bfloat16):
                 state_pred_action = state_act_linear_probe(obs_hidden.detach())
@@ -317,24 +264,25 @@ def train_laom(config: LAOMConfig):
             state_act_probe_loss.backward()
             state_act_probe_optim.step()
 
-            wandb.log(
-                {
-                    "lapo/total_loss": loss.item(),
-                    "lapo/mse_loss": loss0.item(),
-                    "lapo/true_action_mse_loss": loss1.item(),
-                    "lapo/state_probe_mse_loss": state_probe_loss.item(),
-                    "lapo/action_probe_mse_loss": act_probe_loss.item(),
-                    "lapo/state_action_probe_mse_loss": state_act_probe_loss.item(),
-                    "lapo/throughput": total_tokens / (time.time() - start_time),
-                    "lapo/learning_rate": scheduler.get_last_lr()[0],
-                    "lapo/grad_norm": get_grad_norm(lapo).item(),
-                    "lapo/target_obs_norm": torch.norm(next_obs_target, p=2, dim=-1).mean().item(),
-                    "lapo/online_obs_norm": torch.norm(latent_next_obs, p=2, dim=-1).mean().item(),
-                    "lapo/latent_act_norm": torch.norm(latent_action, p=2, dim=-1).mean().item(),
-                    "lapo/epoch": epoch,
-                    "lapo/total_steps": total_iterations,
-                }
-            )
+            log_data = {
+                "lapo/total_loss": loss.item(),
+                "lapo/mse_loss": loss0.item(),
+                "lapo/true_action_mse_loss": loss1.item(),
+                "lapo/state_probe_mse_loss": state_probe_loss.item(),
+                "lapo/action_probe_mse_loss": act_probe_loss.item(),
+                "lapo/state_action_probe_mse_loss": state_act_probe_loss.item(),
+                "lapo/throughput": total_tokens / (time.time() - start_time),
+                "lapo/learning_rate": scheduler.get_last_lr()[0],
+                "lapo/grad_norm": get_grad_norm(lapo).item(),
+                "lapo/target_obs_norm": torch.norm(next_obs_target, p=2, dim=-1).mean().item(),
+                "lapo/online_obs_norm": torch.norm(latent_next_obs, p=2, dim=-1).mean().item(),
+                "lapo/latent_act_norm": torch.norm(latent_action, p=2, dim=-1).mean().item(),
+                "lapo/epoch": epoch,
+                "lapo/total_steps": total_iterations,
+            }
+            if act_probe_r2 is not None:
+                log_data["lapo/action_probe_r2"] = act_probe_r2
+            wandb.log(log_data)
 
         if config.eval_data_path is not None:
             eval_mse_loss = evaluate(lapo, eval_dataloader, device=DEVICE)
@@ -429,7 +377,7 @@ def train_bc(lam: LAOMWithLabels, config: BCConfig):
     total_steps = 0
     for epoch in trange(config.num_epochs, desc="Epochs"):
         actor.train()
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="Batches", leave=False):
             total_tokens += config.batch_size
             total_steps += 1
 
@@ -543,7 +491,7 @@ def train_act_decoder(actor: Actor, config: DecoderConfig, bc_config: BCConfig):
     total_steps = 0
 
     for epoch in trange(num_epochs, desc="Epochs"):
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="Batches", leave=False):
             total_tokens += config.batch_size
             total_steps += 1
 
@@ -600,14 +548,28 @@ def train_act_decoder(actor: Actor, config: DecoderConfig, bc_config: BCConfig):
 
 @pyrallis.wrap()
 def train(config: Config):
+    tags = []
+    data_path_lower = config.lapo.data_path.lower()
+    for env_name in ("cheetah", "hopper", "walker"):
+        if env_name in data_path_lower:
+            tags.append(env_name)
+    tags.extend(
+        [
+            f"seed={config.seed}",
+            f"labeled_loss_coef={config.lapo.labeled_loss_coef}",
+            f"la_dim={config.lapo.latent_action_dim}",
+        ]
+    )
     run = wandb.init(
         project=config.project,
         group=config.group,
         name=config.name,
+        tags=tags,
         config=asdict(config),
         save_code=True,
     )
     set_seed(config.seed)
+    print(f"Device: {DEVICE}")
     # stage 1: pretraining lapo on unlabeled dataset
     lapo = train_laom(config=config.lapo)
     # stage 2: pretraining bc on latent actions
