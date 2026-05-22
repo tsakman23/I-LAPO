@@ -258,9 +258,9 @@ def train_laom(config: LAOMConfig):
                             pred_action_decoder,
                             max_iter=config.ires_inv_max_iter,
                         )
-                        cycle_loss = F.mse_loss(z_reconstructed, latent_action_labeled.detach())
+                        cycle_error = F.mse_loss(z_reconstructed, latent_action_labeled.detach())
                     else:
-                        cycle_loss = torch.tensor(0.0, device=DEVICE)
+                        cycle_error = torch.tensor(0.0, device=DEVICE)
             
             # FD regulariser on decoder (outside autocast, fp32):
             fd_penalty = torch.tensor(0.0, device=DEVICE)
@@ -328,7 +328,7 @@ def train_laom(config: LAOMConfig):
                 "lapo/latent_act_norm": torch.norm(latent_action, p=2, dim=-1).mean().item(),
                 "lapo/epoch": epoch,
                 "lapo/total_steps": total_iterations,
-                "lapo/cycle_consistency_loss": cycle_loss.item(),
+                "lapo/cycle_consistency_error": cycle_error.item(),
             }
             if act_probe_r2 is not None:
                 log_data["lapo/action_probe_r2"] = act_probe_r2
