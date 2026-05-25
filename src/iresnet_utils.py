@@ -4,12 +4,12 @@ from .nn import IResNetDecoder
 
 def fd_regulariser(decoder: IResNetDecoder,
                    z: torch.Tensor,
-                   eps: float = 1e-3) -> torch.Tensor:
+                   eps: float = 0.1) -> torch.Tensor:
     """
     Forward FD regulariser adapted from train_inn_classifier.py:
     encourages small local Lipschitz norms ||J_f(z) v||.
     """
-    z32 = z.detach().float()  # decoder only, no IDM gradients
+    z32 = z.detach().float()  # Detach z from the IDM/FDM comp. graph, pass FD gradients only through decoder weights.
 
     v = torch.randn_like(z32)
     v = v / (v.norm(dim=-1, keepdim=True) + 1e-8)
@@ -30,9 +30,10 @@ def decoder_jacobian(decoder: IResNetDecoder,
     a = decoder(z_single.unsqueeze(0))  # 1 x d
     out = a[0]                          # d
 
-    d = out.shape[0]
-    J = torch.zeros(d, d, device=z_single.device, dtype=z_single.dtype)
-    for i in range(d):
+    d_a = out.shape[0]
+    d_z = z_single.shape[0]
+    J = torch.zeros(d_a, d_z, device=z_single.device, dtype=z_single.dtype) # d_a = d_z = d
+    for i in range(d_a):
         if z_single.grad is not None:
             z_single.grad.zero_()
         grad_i = torch.autograd.grad(
@@ -45,9 +46,16 @@ def decoder_jacobian(decoder: IResNetDecoder,
 
 
 def log_decoder_condition(decoder: IResNetDecoder,
-                          z_batch: torch.Tensor):
-    z0 = z_batch[0]
-    J = decoder_jacobian(decoder, z0)
-    S = torch.linalg.svdvals(J)
-    cond = (S.max() / (S.min() + 1e-8)).item()
-    wandb.log({"lapo/decoder_condition": cond})
+                          z_batch: torch.Tensor,
+                          n_samples: int = 4):
+    indices = torch.randperm(len(z_batch))[:n_samples]
+    conds = []
+    for idx in indices:
+        J = decoder_jacobian(decoder, z_batch[idx])
+        with torch.no_grad():
+            S = torch.linalg.svdvals(J)
+        conds.append((S.max() / (S.min() + 1e-8)).item())
+    wandb.log({
+        "lapo/decoder_condition_mean": sum(conds) / len(conds),
+        "lapo/decoder_condition_max":  max(conds),
+    })
