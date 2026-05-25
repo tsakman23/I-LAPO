@@ -186,6 +186,41 @@ def unnormalize_img(img):
     return ((img / 2.0) + 0.5) * 255.0
 
 
+DCS_BC_NORMALIZATION = {
+    "cheetah": 823.0,
+    "walker": 749.0,
+    "hopper": 253.0,
+    "humanoid": 428.0,
+}
+
+VANILLA_BC_NORMALIZATION = {
+    "cheetah": 840.0,
+    "walker": 735.0,
+    "hopper": 300.0,
+    "humanoid": 601.0,
+}
+
+
+def get_bc_normalizer(data_path: str):
+    if not data_path:
+        return None
+
+    path_lower = data_path.lower()
+    if "dcs" in path_lower:
+        for env_name, norm_value in DCS_BC_NORMALIZATION.items():
+            if env_name in path_lower:
+                return float(norm_value)
+        return None
+
+    elif "vanilla" in path_lower:
+        for env_name, norm_value in VANILLA_BC_NORMALIZATION.items():
+            if env_name in path_lower:
+                return float(norm_value)
+        return None
+
+    return None
+
+
 def weight_init(m):
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         nn.init.orthogonal_(m.weight.data)

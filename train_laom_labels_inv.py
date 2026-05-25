@@ -25,6 +25,7 @@ from src.utils import (
     DCSLAOMInMemoryDataset,
     DCSLAOMTrueActionsDataset,
     create_env_from_df,
+    get_bc_normalizer,
     get_grad_norm,
     get_optim_groups,
     normalize_img,
@@ -588,12 +589,15 @@ def train_act_decoder_inv(actor: Actor, lam: LAOMWithLabelsInvertible, config: C
         device=DEVICE,
         action_decoder=action_decoder,
     )
-    wandb.log(
-        {
-            "decoder/eval_returns_mean": eval_returns.mean(),
-            "decoder/eval_returns_std": eval_returns.std(),
-        }
-    )
+    eval_log = {
+        "decoder/eval_returns_mean": eval_returns.mean(),
+        "decoder/eval_returns_std": eval_returns.std(),
+    }
+    norm_value = get_bc_normalizer(config.decoder.data_path)
+    if norm_value is not None:
+        norm_returns = eval_returns / norm_value
+        eval_log["decoder/eval_returns_norm_mean"] = norm_returns.mean()
+    wandb.log(eval_log)
 
     return action_decoder
 
