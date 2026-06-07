@@ -2,28 +2,15 @@ group: "abl1-decoder-arch"
 seed: 0
 
 lapo:
-  inv_stage: 0
-  latent_action_dim: 6 # Cheetah
+  latent_action_dim: 6
   labeled_loss_coef: 0.001 # 0.001 ONLY FOR CHEETAH
-  ires_hidden_dim: 128
-  ires_n_blocks: 3
-  ires_n_power_iter: 5
-  ires_coeff: 0.8
-  ires_inv_max_iter: 100
-  ires_fd_coef: 1e-4
-  ires_fd_every: 10
-  cycle_loss_coef: 0
-  cycle_loss_every: 100
-
   
   num_epochs: 10
   batch_size: 512
   labeled_batch_size: 128
   cosine_loss: False
   use_aug: True
-  # use_aug: False # No need on vanilla, augmentation would just add noise
   future_obs_offset: 10
-  # future_obs_offset: 1 # single-step IDM, multi-step is for distractors
   learning_rate: 0.0001
   weight_decay: 0.0
   warmup_epochs: 3

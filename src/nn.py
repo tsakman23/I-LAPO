@@ -6,7 +6,18 @@ from src.spectral_norm_fc import spectral_norm_fc
 from vector_quantize_pytorch import FSQ
 
 from .utils import weight_init
+import os
 
+def maybe_chunked_encoder(encoder, x):
+    chunk = int(os.getenv("LAOM_ENCODER_CHUNK", "0"))
+
+    if chunk <= 0 or x.shape[0] <= chunk:
+        return encoder(x)
+
+    return torch.cat(
+        [encoder(x_chunk.contiguous()) for x_chunk in x.split(chunk, dim=0)],
+        dim=0,
+    )
 
 class MLPBlock(nn.Module):
     def __init__(self, dim, expand=4, dropout=0.0):
@@ -186,7 +197,8 @@ class InvertibleResBlock(nn.Module):
     def inverse(self, y: torch.Tensor, max_iter: int = 50, tol: float = 1e-4) -> torch.Tensor:
         """Fixed-point iteration to compute inverse.
         Solves for x in y = x + g(x) => x = y - g(x).
-        x_{k+1} = y - coeff * g(x_k)
+        x_{k+1} = y - g(x_k)
+        Contraction with rate Lip(g) <= coeff^(num_layers) < 1, so converges geometrically.
         No gradients: treat as numerical solver only to avoid exploding/vanishing gradients (Behrmann 2019/2021).
         """
         x = y.clone()  # Initial guess
@@ -295,6 +307,11 @@ class IResNetDecoder(nn.Module):
         
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """f(z) -> a"""
+        if z.shape[-1] != self.act_dim:
+            raise ValueError(
+                f"IResNetDecoder is bijective only when d_z == d_a == act_dim; "
+                f"got input dim {z.shape[-1]}, expected {self.act_dim}."
+            )
         a = z
         for block in self.blocks:
             a = block(a)
@@ -305,6 +322,11 @@ class IResNetDecoder(nn.Module):
                 max_iter: int = 50, 
                 tol: float = 1e-4) -> torch.Tensor:
         """f^{-1}(a) -> z via sequential fixed-point inversion."""
+        if a.shape[-1] != self.act_dim:
+            raise ValueError(
+                f"IResNetDecoder is bijective only when d_z == d_a == act_dim; "
+                f"got input dim {a.shape[-1]}, expected {self.act_dim}."
+            )
         z = a.clone()
         for block in reversed(self.blocks):
             z = block.inverse(z, max_iter=max_iter, tol=tol)
@@ -611,8 +633,9 @@ class LAOMWithLabels(nn.Module):
 
     def forward(self, obs, next_obs, predict_true_act=False):
         # for faster forwad + unified batch norm stats, WARN: 2x batch size!
-        obs_emb, next_obs_emb = self.encoder(torch.concat([obs, next_obs])).split(obs.shape[0])
-
+        # obs_emb, next_obs_emb = self.encoder(torch.concat([obs, next_obs])).split(obs.shape[0])
+        obs_next = torch.concat([obs, next_obs], dim=0)
+        obs_emb, next_obs_emb = maybe_chunked_encoder(self.encoder, obs_next).split(obs.shape[0])
         latent_action = self.idm_head(obs_emb.flatten(1), next_obs_emb.flatten(1))
         latent_next_obs = self.fdm_head(obs_emb.flatten(1).detach(), latent_action)
         # TODO: use norm from encoder here too!
@@ -626,7 +649,9 @@ class LAOMWithLabels(nn.Module):
     @torch.no_grad()
     def label(self, obs, next_obs):
         # for faster forwad + unified batch norm stats, WARN: 2x batch size!
-        obs_emb, next_obs_emb = self.encoder(torch.concat([obs, next_obs])).split(obs.shape[0])
+        # obs_emb, next_obs_emb = self.encoder(torch.concat([obs, next_obs])).split(obs.shape[0])
+        obs_next = torch.concat([obs, next_obs], dim=0)
+        obs_emb, next_obs_emb = maybe_chunked_encoder(self.encoder, obs_next).split(obs.shape[0])
         latent_action = self.idm_head(obs_emb.flatten(1), next_obs_emb.flatten(1))
         return latent_action
     

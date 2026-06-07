@@ -1,20 +1,9 @@
-group: "abl1-decoder-arch"
+group: "abl2-labeled-loss-coef"
 seed: 0
 
 lapo:
-  inv_stage: 0
-  latent_action_dim: 6 # Cheetah
-  labeled_loss_coef: 0.001 # 0.001 ONLY FOR CHEETAH
-  ires_hidden_dim: 128
-  ires_n_blocks: 3
-  ires_n_power_iter: 5
-  ires_coeff: 0.8
-  ires_inv_max_iter: 100
-  ires_fd_coef: 1e-4
-  ires_fd_every: 10
-  cycle_loss_coef: 0
-  cycle_loss_every: 100
-
+  latent_action_dim: 6
+  labeled_loss_coef: 0.01 # 0.001 ONLY FOR CHEETAH
   
   num_epochs: 10
   batch_size: 512
@@ -40,9 +29,9 @@ lapo:
   target_update_every: 1
   frame_stack: 3
   # TODO: change to your data and action-labeled data path, eval is optional
-  data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-train-5000traj.hdf5"
-  labeled_data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-labeled-125traj.hdf5"
-  eval_data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-eval-labeled-50traj.hdf5"
+  data_path: "/data2/laom/data/hopper-vanilla-5000traj.hdf5"
+  labeled_data_path: "/data2/laom/data/hopper-vanilla-labeled-125traj.hdf5"
+  eval_data_path: "/data2/laom/data/hopper-vanilla-labeled-125traj.hdf5"
 
 bc:
   num_epochs: 10
@@ -57,7 +46,7 @@ bc:
   use_aug: False
   frame_stack: 3
   # TODO: change to your data and DAVIS path
-  data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-train-5000traj.hdf5"
+  data_path: "/data2/laom/data/hopper-vanilla-5000traj.hdf5"
   dcs_backgrounds_path: "DAVIS/JPEGImages/480p"
   dcs_backgrounds_split: "train"
   eval_episodes: 5

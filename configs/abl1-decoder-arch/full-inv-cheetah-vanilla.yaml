@@ -40,9 +40,9 @@ lapo:
   target_update_every: 1
   frame_stack: 3
   # TODO: change to your data and action-labeled data path, eval is optional
-  data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-train-5000traj.hdf5"
-  labeled_data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-labeled-125traj.hdf5"
-  eval_data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-eval-labeled-50traj.hdf5"
+  data_path: "/data2/laom/data/cheetah-vanilla-5000traj.hdf5"
+  labeled_data_path: "/data2/laom/data/cheetah-vanilla-labeled-125traj.hdf5"
+  eval_data_path: null # TODO: CREATE EVAL SET (50 LABELS)
 
 bc:
   num_epochs: 10
@@ -57,7 +57,7 @@ bc:
   use_aug: False
   frame_stack: 3
   # TODO: change to your data and DAVIS path
-  data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-train-5000traj.hdf5"
+  data_path: "/data2/laom/data/cheetah-vanilla-5000traj.hdf5"
   dcs_backgrounds_path: "DAVIS/JPEGImages/480p"
   dcs_backgrounds_split: "train"
   eval_episodes: 5

@@ -39,6 +39,34 @@ torch.backends.cudnn.allow_tf32 = True
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+import os
+
+AUG_CHUNK = int(os.getenv("LAOM_AUG_CHUNK", "0"))
+TARGET_CHUNK = int(os.getenv("LAOM_TARGET_CHUNK", "0"))
+
+
+def chunked_apply(fn, x, chunk_size):
+    if chunk_size <= 0 or x.shape[0] <= chunk_size:
+        return fn(x)
+
+    return torch.cat(
+        [fn(x_chunk.contiguous()) for x_chunk in x.split(chunk_size, dim=0)],
+        dim=0,
+    )
+
+
+@torch.no_grad()
+def chunked_encode_flat(encoder, x, chunk_size):
+    if chunk_size <= 0 or x.shape[0] <= chunk_size:
+        return encoder(x).flatten(1)
+
+    return torch.cat(
+        [
+            encoder(x_chunk.contiguous()).flatten(1)
+            for x_chunk in x.split(chunk_size, dim=0)
+        ],
+        dim=0,
+    )
 
 @dataclass
 class LAOMConfig(LAOMConfigBase):
@@ -176,10 +204,14 @@ def train_laom(config: LAOMConfig):
             next_obs = normalize_img(next_obs.permute((0, 3, 1, 2)))
             future_obs = normalize_img(future_obs.permute((0, 3, 1, 2)))
 
+            # if config.use_aug:
+            #     obs_aug = augmenter(obs)
+            #     future_obs_aug = augmenter(future_obs)
+            #     next_obs_aug = augmenter(next_obs)
             if config.use_aug:
-                obs_aug = augmenter(obs)
-                future_obs_aug = augmenter(future_obs)
-                next_obs_aug = augmenter(next_obs)
+                obs_aug = chunked_apply(augmenter, obs, AUG_CHUNK)
+                future_obs_aug = chunked_apply(augmenter, future_obs, AUG_CHUNK)
+                next_obs_aug = chunked_apply(augmenter, next_obs, AUG_CHUNK)
 
             # update lapo
             with torch.autocast(DEVICE, dtype=torch.bfloat16):
@@ -190,10 +222,12 @@ def train_laom(config: LAOMConfig):
                     latent_next_obs, latent_action, obs_hidden = lapo(obs, future_obs)
 
                 with torch.no_grad():
-                    if config.use_aug:
-                        next_obs_target = target_lapo.encoder(next_obs_aug).flatten(1)
-                    else:
-                        next_obs_target = target_lapo.encoder(next_obs).flatten(1)
+                    # if config.use_aug:
+                    #     next_obs_target = target_lapo.encoder(next_obs_aug).flatten(1)
+                    # else:
+                    #     next_obs_target = target_lapo.encoder(next_obs).flatten(1)
+                    target_input = next_obs_aug if config.use_aug else next_obs
+                    next_obs_target = chunked_encode_flat(target_lapo.encoder, target_input, TARGET_CHUNK)
 
                 if config.cosine_loss:
                     loss0 = 1 - F.cosine_similarity(latent_next_obs, next_obs_target.detach(), dim=-1).mean()
@@ -208,9 +242,12 @@ def train_laom(config: LAOMConfig):
             label_future_obs = normalize_img(label_future_obs.permute((0, 3, 1, 2)))
             label_next_obs = normalize_img(label_next_obs.permute((0, 3, 1, 2)))
 
+            # if config.use_aug:
+            #     label_obs_aug = augmenter(label_obs)
+            #     label_future_obs_aug = augmenter(label_future_obs)
             if config.use_aug:
-                label_obs_aug = augmenter(label_obs)
-                label_future_obs_aug = augmenter(label_future_obs)
+                label_obs_aug = chunked_apply(augmenter, label_obs, AUG_CHUNK)
+                label_future_obs_aug = chunked_apply(augmenter, label_future_obs, AUG_CHUNK)
 
             # update lapo
             with torch.autocast(DEVICE, dtype=torch.bfloat16):
