@@ -342,8 +342,8 @@ class IResNetDecoder(nn.Module):
         was_training = self.training
         self.eval()
         try:
-            with torch.enable_grad():
-                zin = z_star.detach().requires_grad_(True)
+            with torch.autocast(device_type=z_star.device.type, enabled=False), torch.enable_grad():
+                zin = z_star.detach().float().requires_grad_(True)
                 out = self.forward(zin)                      # (B, d)
                 d = zin.shape[-1]
                 rows = []
@@ -377,22 +377,27 @@ class IResNetDecoder(nn.Module):
         (the exact-inverse identity has zero derivative); the signal lives in losses
         where `a` is an independent target, e.g. f^{-1}(a_true) vs predicted latent.
         """
-        with torch.no_grad():
-            z_star = self.inverse(a, max_iter=max_iter, tol=tol).detach()
+        # Run entirely in fp32 with autocast disabled: the fixed-point solve, the
+        # Jacobian and the linear solve need full precision, and bf16 leaking in here
+        # corrupts the backward pass ("Found dtype BFloat16 but expected Float").
+        with torch.autocast(device_type=a.device.type, enabled=False):
+            a = a.float()
+            with torch.no_grad():
+                z_star = self.inverse(a, max_iter=max_iter, tol=tol).detach()
 
-        J = self._forward_jacobian_const(z_star)             # (B, d, d), constant
+            J = self._forward_jacobian_const(z_star)         # (B, d, d), constant
 
-        # eval() => differentiable wrt params (grad flows through W_orig) with no
-        # power-iteration side effects; z_star is constant, a carries grad.
-        was_training = self.training
-        self.eval()
-        try:
-            residual = self.forward(z_star) - a              # (B, d), differentiable
-        finally:
-            self.train(was_training)
+            # eval() => differentiable wrt params (grad flows through W_orig) with no
+            # power-iteration side effects; z_star is constant, a carries grad.
+            was_training = self.training
+            self.eval()
+            try:
+                residual = self.forward(z_star) - a          # (B, d), differentiable
+            finally:
+                self.train(was_training)
 
-        correction = torch.linalg.solve(J, residual.unsqueeze(-1)).squeeze(-1)
-        return z_star - correction
+            correction = torch.linalg.solve(J, residual.unsqueeze(-1)).squeeze(-1)
+            return z_star - correction
 
 
 # IDM: (s_t, s_t+1) -> a_t

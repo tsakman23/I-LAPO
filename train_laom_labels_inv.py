@@ -283,7 +283,7 @@ def train_laom(config: LAOMConfig):
                     pred_action_decoder.float(),
                     max_iter=config.ires_inv_max_iter,
                 )
-                cycle_loss_term = F.mse_loss(z_rec_diff, latent_action_labeled.detach())
+                cycle_loss_term = F.mse_loss(z_rec_diff, latent_action_labeled.detach().float())
 
             # Total loss: optional FD penalty + optional (experimental) cycle term
             loss = (
