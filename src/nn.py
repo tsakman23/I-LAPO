@@ -186,7 +186,8 @@ class InvertibleResBlock(nn.Module):
     def inverse(self, y: torch.Tensor, max_iter: int = 50, tol: float = 1e-4) -> torch.Tensor:
         """Fixed-point iteration to compute inverse.
         Solves for x in y = x + g(x) => x = y - g(x).
-        x_{k+1} = y - coeff * g(x_k)
+        x_{k+1} = y - g(x_k)
+        Contraction with rate Lip(g) <= coeff^(num_layers) < 1, so converges geometrically.
         No gradients: treat as numerical solver only to avoid exploding/vanishing gradients (Behrmann 2019/2021).
         """
         x = y.clone()  # Initial guess
@@ -295,6 +296,11 @@ class IResNetDecoder(nn.Module):
         
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """f(z) -> a"""
+        if z.shape[-1] != self.act_dim:
+            raise ValueError(
+                f"IResNetDecoder is bijective only when d_z == d_a == act_dim; "
+                f"got input dim {z.shape[-1]}, expected {self.act_dim}."
+            )
         a = z
         for block in self.blocks:
             a = block(a)
@@ -305,6 +311,11 @@ class IResNetDecoder(nn.Module):
                 max_iter: int = 50, 
                 tol: float = 1e-4) -> torch.Tensor:
         """f^{-1}(a) -> z via sequential fixed-point inversion."""
+        if a.shape[-1] != self.act_dim:
+            raise ValueError(
+                f"IResNetDecoder is bijective only when d_z == d_a == act_dim; "
+                f"got input dim {a.shape[-1]}, expected {self.act_dim}."
+            )
         z = a.clone()
         for block in reversed(self.blocks):
             z = block.inverse(z, max_iter=max_iter, tol=tol)
