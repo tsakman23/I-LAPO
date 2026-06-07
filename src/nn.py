@@ -332,6 +332,68 @@ class IResNetDecoder(nn.Module):
             z = block.inverse(z, max_iter=max_iter, tol=tol)
         return z
 
+    def _forward_jacobian_const(self, z_star: torch.Tensor) -> torch.Tensor:
+        """Per-sample forward Jacobian J_f(z_star), returned as a CONSTANT (detached).
+
+        Computed in eval() so the spectral-norm hook does not run power iteration
+        (no buffer side effects); the normalised weights are identical to train mode.
+        Shape: (B, d, d) with J[b, i, j] = d f_i / d z_j at z_star[b].
+        """
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.enable_grad():
+                zin = z_star.detach().requires_grad_(True)
+                out = self.forward(zin)                      # (B, d)
+                d = zin.shape[-1]
+                rows = []
+                for i in range(d):
+                    gi = torch.autograd.grad(
+                        out[:, i].sum(), zin, retain_graph=True, create_graph=False
+                    )[0]                                     # (B, d)
+                    rows.append(gi)
+                J = torch.stack(rows, dim=1)                 # (B, d, d)
+        finally:
+            self.train(was_training)
+        return J.detach()
+
+    def inverse_implicit(self, a: torch.Tensor,
+                         max_iter: int = 100,
+                         tol: float = 1e-4) -> torch.Tensor:
+        """Differentiable inverse via the implicit function theorem.
+
+        The fixed-point solve for z* = f^{-1}(a) is done WITHOUT grad, then a single
+        Newton-style correction term carries the exact first-order gradient:
+
+            z_out = z* - J_f(z*)^{-1} ( f(z*) - a )
+
+        With z* and J_f(z*) treated as constants and f(z*) / a differentiable, this
+        yields  dz/da = J_f^{-1}  and  dz/dtheta = -J_f^{-1} (d f/d theta)  exactly --
+        i.e. the implicit gradient -- with NO backprop through the iteration. The
+        (well-conditioned) linear solve replaces the unrolled product of Jacobians,
+        avoiding the exploding/vanishing gradients of differentiating the fixed point.
+
+        NOTE: for the pure cycle f^{-1}(f(z)) this gradient is ~0 by construction
+        (the exact-inverse identity has zero derivative); the signal lives in losses
+        where `a` is an independent target, e.g. f^{-1}(a_true) vs predicted latent.
+        """
+        with torch.no_grad():
+            z_star = self.inverse(a, max_iter=max_iter, tol=tol).detach()
+
+        J = self._forward_jacobian_const(z_star)             # (B, d, d), constant
+
+        # eval() => differentiable wrt params (grad flows through W_orig) with no
+        # power-iteration side effects; z_star is constant, a carries grad.
+        was_training = self.training
+        self.eval()
+        try:
+            residual = self.forward(z_star) - a              # (B, d), differentiable
+        finally:
+            self.train(was_training)
+
+        correction = torch.linalg.solve(J, residual.unsqueeze(-1)).squeeze(-1)
+        return z_star - correction
+
 
 # IDM: (s_t, s_t+1) -> a_t
 class IDM(nn.Module):

@@ -52,6 +52,7 @@ class LAOMConfig(LAOMConfigBase):
     ires_coeff: float = 0.8
     ires_inv_max_iter: int = 100
     cycle_loss_coef: float = 0.0    # REMOVED, no cycle loss gradients, only kept as metric
+    cycle_grad_mode: str = "none"   # EXPERIMENT: "none" | "implicit" (implicit-function-theorem cycle grad)
     cycle_loss_every: int = 100
     ires_fd_coef: float = 1e-4      # FD reg strength
     ires_fd_every: int = 10         # apply FD penalty every N iters
@@ -268,10 +269,29 @@ def train_laom(config: LAOMConfig):
             if config.inv_stage == 0 or config.inv_stage == 1:
                 if config.ires_fd_coef > 0 and (total_iterations % config.ires_fd_every == 0):
                     fd_penalty = fd_regulariser(lapo.true_actions_head, latent_action_labeled) # type: ignore
-            
-            # Total loss: no cycle term
-            # Plus optional FD penalty
-            loss = loss0 + config.labeled_loss_coef * loss1 + config.ires_fd_coef * fd_penalty
+
+            # EXPERIMENT (branch experiment/implicit-diff-cycle): differentiable cycle
+            # loss via the implicit function theorem instead of unrolling the fixed
+            # point. Opt-in; default cycle_grad_mode="none" leaves behaviour unchanged.
+            cycle_loss_term = torch.tensor(0.0, device=DEVICE)
+            if (
+                config.cycle_grad_mode == "implicit"
+                and config.cycle_loss_coef > 0
+                and hasattr(lapo.true_actions_head, "inverse_implicit")
+            ):
+                z_rec_diff = lapo.true_actions_head.inverse_implicit(  # type: ignore
+                    pred_action_decoder.float(),
+                    max_iter=config.ires_inv_max_iter,
+                )
+                cycle_loss_term = F.mse_loss(z_rec_diff, latent_action_labeled.detach())
+
+            # Total loss: optional FD penalty + optional (experimental) cycle term
+            loss = (
+                loss0
+                + config.labeled_loss_coef * loss1
+                + config.ires_fd_coef * fd_penalty
+                + config.cycle_loss_coef * cycle_loss_term
+            )
 
             optim.zero_grad(set_to_none=True)
             loss.backward()
@@ -335,7 +355,9 @@ def train_laom(config: LAOMConfig):
                 log_data["lapo/action_probe_r2"] = act_probe_r2
             if fd_penalty.item() > 0:
                 log_data["lapo/fd_penalty"] = fd_penalty.item()
-                
+            if config.cycle_grad_mode == "implicit" and config.cycle_loss_coef > 0:
+                log_data["lapo/cycle_loss_term"] = cycle_loss_term.item()
+
             wandb.log(log_data)
             
             # Occasionally log decoder Jacobian condition number
