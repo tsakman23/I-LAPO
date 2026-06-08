@@ -6,6 +6,8 @@
 
 Official implementation of the [**Latent Action Learning Requires Supervision in the Presence of Distractors**](https://arxiv.org/abs/2502.00379). Through empirical investigation, we demonstrate that supervision is necessary for good performance in latent action learning, highlighting a major limitation of current methods.
 
+> **Note:** This repository is a modified fork of [dunnolab/laom](https://github.com/dunnolab/laom) (Apache-2.0), adding an invertible i-ResNet decoder and related experiments. The project remains under the Apache License 2.0 (see [`LICENSE`](LICENSE)); third-party components and their licenses are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
 <img src="images/final_result_comb.jpg" alt="Environments" width="1000">
 
 ## Setup instructions
