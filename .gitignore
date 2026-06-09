@@ -173,3 +173,5 @@ ipynb_checkpoints
 **/**/.ipynb_checkpoints
 notebooks
 .ruff_cache
+*.docx
+*.pdf
