@@ -275,8 +275,8 @@ class IResNetDecoder(nn.Module):
     """
     def __init__(self, act_dim: int, 
                  hidden_dim: int = 128, 
-                 n_blocks: int = 3, 
-                 coeff: float = 0.8, 
+                 n_blocks: int = 2,
+                 coeff: float = 0.8,
                  n_power_iterations: int = 10):
         super().__init__()
         if act_dim <= 0:
@@ -650,7 +650,7 @@ class LAOMWithLabelsInvertible(LAOMWithLabels):
         true_act_dim,
         latent_act_dim,
         ires_hidden_dim=128,
-        ires_n_blocks=3,
+        ires_n_blocks=2,
         ires_n_power_iter=10,
         ires_coeff=0.8,
         encoder_scale=1,

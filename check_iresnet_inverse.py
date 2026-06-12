@@ -11,7 +11,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--act_dim", type=int, default=4)
     parser.add_argument("--coeff", type=float, default=0.8)
-    parser.add_argument("--n_blocks", type=int, default=3)
+    parser.add_argument("--n_blocks", type=int, default=2)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--n_power_iterations", type=int, default=10)
     parser.add_argument("--max_iter", type=int, default=50)

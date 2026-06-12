@@ -47,7 +47,7 @@ class LAOMConfig(LAOMConfigBase):
     inv_stage: int = 0
     latent_action_dim: int = 4  # MUST equal true action dim
     ires_hidden_dim: int = 128
-    ires_n_blocks: int = 3
+    ires_n_blocks: int = 2
     ires_n_power_iter: int = 10
     ires_coeff: float = 0.8
     ires_inv_max_iter: int = 100
