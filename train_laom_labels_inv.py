@@ -443,6 +443,27 @@ def train_bc(lam: LAOMWithLabels, config: BCConfig):
     if config.use_aug:
         augmenter = Augmenter(img_resolution=dataset.img_hw)
 
+    # Per-dimension standardization of the latent BC targets (low-dim stability fix).
+    # No-op when standardize_targets is False (mean=0, std=1).
+    if config.standardize_targets:
+        with torch.no_grad():
+            samples = []
+            for k, batch in enumerate(dataloader):
+                o_s, no_s, _ = [b.to(DEVICE) for b in batch]
+                o_s = normalize_img(o_s.permute((0, 3, 1, 2)))
+                no_s = normalize_img(no_s.permute((0, 3, 1, 2)))
+                samples.append(lam.label(o_s, no_s).float())
+                if k + 1 >= config.standardize_n_batches:
+                    break
+            z_stat = torch.cat(samples, dim=0)
+            tgt_mean = z_stat.mean(dim=0, keepdim=True)
+            tgt_std = z_stat.std(dim=0, keepdim=True).clamp_min(1e-6)
+    else:
+        tgt_mean = torch.zeros(1, num_actions, device=DEVICE)
+        tgt_std = torch.ones(1, num_actions, device=DEVICE)
+    print(f"BC target standardize={config.standardize_targets}, latent target std (mean over dims)={tgt_std.mean().item():.4f}")
+    wandb.log({"bc/target_latent_std": tgt_std.mean().item()})
+
     start_time = time.time()
     total_tokens = 0
     total_steps = 0
@@ -459,6 +480,8 @@ def train_bc(lam: LAOMWithLabels, config: BCConfig):
 
             # label with lapo latent actions
             target_actions = lam.label(obs, next_obs)
+            # standardize regression target (no-op when mean=0, std=1)
+            target_actions = (target_actions - tgt_mean) / tgt_std
 
             # augment obs only for bc to make action labels determenistic
             if config.use_aug:

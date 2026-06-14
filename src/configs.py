@@ -46,6 +46,10 @@ class BCConfig:
     dropout: float = 0.0
     use_aug: bool = True
     frame_stack: int = 3
+    # per-dimension z-scoring of the latent BC targets. Stabilises the regression
+    # in the low-dim regime (small d_z); near no-op when latents are already well-scaled.
+    standardize_targets: bool = False
+    standardize_n_batches: int = 20  # batches used to estimate target mean/std
     data_path: str = "data/test.hdf5"
     dcs_backgrounds_path: str = "DAVIS/JPEGImages/480p"
     dcs_backgrounds_split: str = "train"

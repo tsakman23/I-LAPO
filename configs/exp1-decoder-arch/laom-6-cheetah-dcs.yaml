@@ -32,6 +32,8 @@ lapo:
   eval_data_path: "/data2/laom/data/dcs/cheetah/cheetah-run-dcs-eval-labeled-50traj.hdf5"
 
 bc:
+  standardize_targets: True
+  
   num_epochs: 10
   batch_size: 512
   learning_rate: 0.0001
