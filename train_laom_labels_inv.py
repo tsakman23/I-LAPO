@@ -3,6 +3,7 @@ import time
 import uuid
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from typing import Optional
 
 import numpy as np
 import pyrallis
@@ -17,6 +18,7 @@ from tqdm import trange, tqdm
 from sklearn.metrics import r2_score
 
 from src.augmentations import Augmenter
+from src.checkpoint import load_model, save_model, save_run_config, stage_path
 from src.configs import BCConfig, DecoderConfig, LAOMConfigBase
 from src.nn import ActionDecoder, IResNetDecoder, Actor, LAOMWithLabels, LAOMWithLabelsInvertible
 from src.scheduler import linear_annealing_with_warmup
@@ -63,6 +65,12 @@ class Config:
     group: str = "laom-labels"
     name: str = "laom-labels"
     seed: int = 0
+
+    save_checkpoints: bool = False
+    checkpoint_dir: str = "checkpoints"
+    # path to a saved Stage-1 LAM checkpoint; if set, skip Stage 1 and run only
+    # Stage 2 (BC) + Stage 3 (decoder). Lets ablations reuse the LAM.
+    resume_lam_from: Optional[str] = None
 
     lapo: LAOMConfig = field(default_factory=LAOMConfig)
     bc: BCConfig = field(default_factory=BCConfig)
@@ -123,7 +131,7 @@ def train_laom(config: LAOMConfig):
             drop_last=False,
         )
 
-    lapo = LAOMWithLabelsInvertible(
+    lapo_kwargs = dict(
         inv_stage=config.inv_stage,
         shape=(3 * config.frame_stack, dataset.img_hw, dataset.img_hw),
         true_act_dim=dataset.act_dim,
@@ -141,7 +149,9 @@ def train_laom(config: LAOMConfig):
         encoder_num_res_blocks=config.encoder_num_res_blocks,
         encoder_dropout=config.encoder_dropout,
         encoder_norm_out=config.encoder_norm_out,
-    ).to(DEVICE)
+    )
+    lapo = LAOMWithLabelsInvertible(**lapo_kwargs).to(DEVICE)
+    lapo._build_kwargs = lapo_kwargs
 
     target_lapo = deepcopy(lapo)
     for p in target_lapo.parameters():
@@ -403,14 +413,16 @@ def train_bc(lam: LAOMWithLabels, config: BCConfig):
         p.requires_grad_(False)
     lam.eval()
 
-    actor = Actor(
+    actor_kwargs = dict(
         shape=(3 * config.frame_stack, dataset.img_hw, dataset.img_hw),
         num_actions=num_actions,
         encoder_scale=config.encoder_scale,
         encoder_channels=(16, 32, 64, 128, 256) if config.encoder_deep else (16, 32, 32),
         encoder_num_res_blocks=config.encoder_num_res_blocks,
         dropout=config.dropout,
-    ).to(DEVICE)
+    )
+    actor = Actor(**actor_kwargs).to(DEVICE)
+    actor._build_kwargs = actor_kwargs
 
     optim = torch.optim.AdamW(params=get_optim_groups(actor, config.weight_decay), lr=config.learning_rate, fused=True)
     # scheduler setup
@@ -558,17 +570,27 @@ def train_act_decoder_inv(actor: Actor, lam: LAOMWithLabelsInvertible, config: C
     if config.lapo.inv_stage == 0:
         # Extract the bijective decoder trained in Stage 1 - no retraining needed
         action_decoder = lam.true_actions_head
+        # Record kwargs so the standalone decoder checkpoint can be rebuilt.
+        action_decoder._build_kwargs = dict(
+            act_dim=actor.num_actions,
+            hidden_dim=config.lapo.ires_hidden_dim,
+            n_blocks=config.lapo.ires_n_blocks,
+            coeff=config.lapo.ires_coeff,
+            n_power_iterations=config.lapo.ires_n_power_iter,
+        )
     elif config.lapo.inv_stage == 1:
         # Stage 3 trains fresh MLP decoder
         return train_act_decoder(actor=actor, config=config.decoder, bc_config=bc_config)
     else:
         # Fresh decoder for Stage 3 training
-        action_decoder = IResNetDecoder(
+        decoder_kwargs = dict(
             act_dim=actor.num_actions,
             hidden_dim=config.lapo.ires_hidden_dim,
             n_blocks=config.lapo.ires_n_blocks,
             n_power_iterations=config.lapo.ires_n_power_iter,
-        ).to(DEVICE)
+        )
+        action_decoder = IResNetDecoder(**decoder_kwargs).to(DEVICE)
+        action_decoder._build_kwargs = decoder_kwargs
         action_decoder = _train_ires_decoder(actor, action_decoder, config, config.bc)
     action_decoder.eval()
     for p in action_decoder.parameters():
@@ -613,14 +635,29 @@ def train(config: Config):
     )
     set_seed(config.seed)
     print(f"Device: {DEVICE}")
-    # stage 1: pretraining lapo on unlabeled dataset
-    lapo = train_laom(config=config.lapo)
+    if config.save_checkpoints:
+        save_run_config(config.checkpoint_dir, config.name, config)
+    # stage 1: pretraining lapo on unlabeled dataset (or reuse a saved LAM)
+    if config.resume_lam_from is not None:
+        print(f"Resuming: loading Stage-1 LAM from {config.resume_lam_from} (skipping Stage 1)")
+        lapo, _ = load_model(config.resume_lam_from, map_location=DEVICE, eval_mode=True)
+    else:
+        lapo = train_laom(config=config.lapo)
+        if config.save_checkpoints:
+            save_model(stage_path(config.checkpoint_dir, config.name, "stage1_lam.pt"), lapo)
+            print(f"Saved stage 1 LAM to {stage_path(config.checkpoint_dir, config.name, 'stage1_lam.pt')}")
     # stage 2: pretraining bc on latent actions
     actor = train_bc(lam=lapo, config=config.bc)
-    # stage 3: train action decoder on labeled dataset and evaluate with it 
+    if config.save_checkpoints:
+        save_model(stage_path(config.checkpoint_dir, config.name, "stage2_actor.pt"), actor)
+        print(f"Saved stage 2 actor to {stage_path(config.checkpoint_dir, config.name, 'stage2_actor.pt')}")
+    # stage 3: train action decoder on labeled dataset and evaluate with it
     # For I-LAPO-full, no finetuning needed since it's already trained from stage 1
     action_decoder = train_act_decoder_inv(actor=actor, lam=lapo, config=config, bc_config=config.bc)
-    
+    if config.save_checkpoints:
+        save_model(stage_path(config.checkpoint_dir, config.name, "stage3_decoder.pt"), action_decoder)
+        print(f"Saved stage 3 decoder to {stage_path(config.checkpoint_dir, config.name, 'stage3_decoder.pt')}")
+
     run.finish()
     return lapo, actor, action_decoder
 
