@@ -322,6 +322,46 @@ class IResNetDecoder(nn.Module):
         return z
 
 
+class StandardizedActionDecoder(nn.Module):
+    """Wrap a bijective decoder trained on RAW latents so a BC actor that emits
+    STANDARDIZED latents can drive it.
+
+    Stage 1 trains the i-ResNet decoder D on raw LAOM latents z  (D: z -> a).
+    Stage 2 trains the actor to predict standardized latents z' = (z - mean) / std.
+    Feeding z' straight into D is out-of-distribution (||z'|| ~ ||z|| / std), which
+    collapses returns. This wrapper inverts the standardization before decoding:
+        forward(z') = D(z' * std + mean).
+    mean/std are buffers, so the saved checkpoint up to stage 3 is self-contained. With the default
+    mean=0, std=1 it reduces to plain D (safe when standardize_targets is False).
+    """
+
+    def __init__(self, act_dim, hidden_dim=128, n_blocks=2, coeff=0.8, n_power_iterations=10):
+        super().__init__()
+        self.decoder = IResNetDecoder(
+            act_dim=act_dim,
+            hidden_dim=hidden_dim,
+            n_blocks=n_blocks,
+            coeff=coeff,
+            n_power_iterations=n_power_iterations,
+        )
+        self.register_buffer("mean", torch.zeros(1, act_dim))
+        self.register_buffer("std", torch.ones(1, act_dim))
+
+    @torch.no_grad()
+    def set_standardization(self, mean, std):
+        self.mean.copy_(mean.reshape(1, -1).to(self.mean))
+        self.std.copy_(std.reshape(1, -1).to(self.std))
+
+    def forward(self, z_std: torch.Tensor) -> torch.Tensor:
+        return self.decoder(z_std * self.std + self.mean)
+
+    @torch.no_grad()
+    def inverse(self, a: torch.Tensor, max_iter: int = 50, tol: float = 1e-4) -> torch.Tensor:
+        """f^{-1}(a) -> z' (standardized): un-decode then re-standardize."""
+        z_raw = self.decoder.inverse(a, max_iter=max_iter, tol=tol)
+        return (z_raw - self.mean) / self.std
+
+
 # IDM: (s_t, s_t+1) -> a_t
 class IDM(nn.Module):
     def __init__(

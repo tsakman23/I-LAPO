@@ -20,7 +20,7 @@ from sklearn.metrics import r2_score
 from src.augmentations import Augmenter
 from src.checkpoint import load_model, save_model, save_run_config, stage_path
 from src.configs import BCConfig, DecoderConfig, LAOMConfigBase
-from src.nn import ActionDecoder, IResNetDecoder, Actor, LAOMWithLabels, LAOMWithLabelsInvertible
+from src.nn import ActionDecoder, IResNetDecoder, Actor, LAOMWithLabels, LAOMWithLabelsInvertible, StandardizedActionDecoder
 from src.scheduler import linear_annealing_with_warmup
 from src.utils import (
     DCSInMemoryDataset,
@@ -536,6 +536,10 @@ def train_bc(lam: LAOMWithLabels, config: BCConfig):
         }
     )
 
+    # Expose the latent standardization so Stage 3 can invert it before feeding a
+    # decoder that was trained on RAW latents (the reused Stage-1 i-ResNet).
+    actor.bc_target_mean = tgt_mean.detach()
+    actor.bc_target_std = tgt_std.detach()
     return actor
 
 
@@ -591,16 +595,25 @@ def _train_ires_decoder(
 
 def train_act_decoder_inv(actor: Actor, lam: LAOMWithLabelsInvertible, config: Config, bc_config: BCConfig):
     if config.lapo.inv_stage == 0:
-        # Extract the bijective decoder trained in Stage 1 - no retraining needed
-        action_decoder = lam.true_actions_head
-        # Record kwargs so the standalone decoder checkpoint can be rebuilt.
-        action_decoder._build_kwargs = dict(
+        # Reuse the bijective decoder trained in Stage 1 - no retraining needed.
+        # BUT the Stage-2 actor emits STANDARDIZED latents while this decoder was
+        # trained on RAW latents, so wrap it to invert the standardization first.
+        # (No-op when standardize_targets is False: mean=0, std=1.)
+        decoder_kwargs = dict(
             act_dim=actor.num_actions,
             hidden_dim=config.lapo.ires_hidden_dim,
             n_blocks=config.lapo.ires_n_blocks,
             coeff=config.lapo.ires_coeff,
             n_power_iterations=config.lapo.ires_n_power_iter,
         )
+        action_decoder = StandardizedActionDecoder(**decoder_kwargs).to(DEVICE)
+        action_decoder.decoder.load_state_dict(lam.true_actions_head.state_dict())
+        action_decoder.set_standardization(
+            getattr(actor, "bc_target_mean", torch.zeros(1, actor.num_actions, device=DEVICE)),
+            getattr(actor, "bc_target_std", torch.ones(1, actor.num_actions, device=DEVICE)),
+        )
+        # Record kwargs so the standalone decoder checkpoint can be rebuilt.
+        action_decoder._build_kwargs = decoder_kwargs
     elif config.lapo.inv_stage == 1:
         # Stage 3 trains fresh MLP decoder
         return train_act_decoder(actor=actor, config=config.decoder, bc_config=bc_config)

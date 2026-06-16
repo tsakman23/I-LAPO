@@ -22,6 +22,7 @@ from src.nn import (
     IResNetDecoder,
     LAOMWithLabels,
     LAOMWithLabelsInvertible,
+    StandardizedActionDecoder,
 )
 
 # Class name -> class, for rebuilding from a checkpoint.
@@ -33,6 +34,7 @@ _REGISTRY = {
         IResNetDecoder,
         LAOMWithLabels,
         LAOMWithLabelsInvertible,
+        StandardizedActionDecoder,
     )
 }
 
