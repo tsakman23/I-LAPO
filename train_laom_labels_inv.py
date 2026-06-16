@@ -623,6 +623,7 @@ def train_act_decoder_inv(actor: Actor, lam: LAOMWithLabelsInvertible, config: C
             act_dim=actor.num_actions,
             hidden_dim=config.lapo.ires_hidden_dim,
             n_blocks=config.lapo.ires_n_blocks,
+            coeff=config.lapo.ires_coeff,
             n_power_iterations=config.lapo.ires_n_power_iter,
         )
         action_decoder = IResNetDecoder(**decoder_kwargs).to(DEVICE)
