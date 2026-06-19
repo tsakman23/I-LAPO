@@ -57,7 +57,7 @@ class LAOMConfig(LAOMConfigBase):
 
 @dataclass
 class Config:
-    project: str = "laom"
+    project: str = "ilapo"
     group: str = "laom-labels"
     name: str = "laom-labels"
     seed: int = 0

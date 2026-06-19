@@ -68,11 +68,11 @@ class LAOMConfig(LAOMConfigBase):
 
 
 @dataclass
-class Config:
-    project: str = "laom"
-    group: str = "laom-labels"
-    name: str = "laom-labels"
-    seed: int = 0
+class Config: # most of these are overridden by the command line or config file
+    project: str = "ilapo"
+    group: str = "laom-labels" # override via config
+    name: str = "laom-labels" # override via config
+    seed: int = 0 # override via config, you get the point...
 
     save_checkpoints: bool = True
     checkpoint_dir: str = "checkpoints"
