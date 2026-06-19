@@ -1,5 +1,7 @@
 group: "dcs-laom+supervision-reproduction"
 seed: 0
+# pipeline stages to run: "1", "2", "3", "12", "23", "123" (or "full"). default full
+stages: "123"
 
 lapo:
   latent_action_dim: 8192

@@ -88,9 +88,8 @@ def load_model(path, map_location=None, eval_mode=True):
     return model, payload
 
 
-def save_run_config(checkpoint_dir, run_name, config):
+def save_run_config(run_dir, config):
     """Dump the full run config alongside the checkpoints for provenance."""
-    run_dir = os.path.join(checkpoint_dir, run_name)
     os.makedirs(run_dir, exist_ok=True)
     cfg = asdict(config) if is_dataclass(config) else config
     with open(os.path.join(run_dir, "config.json"), "w") as f:
@@ -98,5 +97,60 @@ def save_run_config(checkpoint_dir, run_name, config):
     return run_dir
 
 
-def stage_path(checkpoint_dir, run_name, filename):
-    return os.path.join(checkpoint_dir, run_name, filename)
+def stage_path(run_dir, filename):
+    """Path of a single stage checkpoint inside a run directory."""
+    return os.path.join(run_dir, filename)
+
+
+def dataset_tag(data_path):
+    """Derive a dataset tag like `cheetah-dcs` / `walker-vanilla` from a data
+    path. Used as the top level of the structured checkpoint tree so runs group
+    by environment + benchmark suite.
+    """
+    p = (data_path or "").lower()
+    env = next((e for e in ("cheetah", "hopper", "walker") if e in p), "unknown-env")
+    if "dcs" in p:
+        suite = "dcs"
+    elif "vanilla" in p:
+        suite = "vanilla"
+    else:
+        raise ValueError(f"Unknown benchmark suite in {data_path!r}; expected 'dcs' or 'vanilla' (DMControl).")
+    return f"{env}-{suite}"
+
+
+def run_checkpoint_dir(checkpoint_dir, dataset, model, seed, run_id, fd_coef=None):
+    """Build the structured run directory where a run's stage checkpoints live:
+
+        {checkpoint_dir}/{dataset}/{model}/seed-{seed}/[fd-coef-{fd_coef}/]{run_id}
+
+    `fd_coef` is included only when not None (i-ResNet / I-LAPO runs); plain
+    LAOM runs omit that level. `run_id` is typically the W&B run id so the leaf
+    directory is unique per run.
+    """
+    parts = [checkpoint_dir, dataset, model, f"seed-{seed}"]
+    if fd_coef is not None:
+        parts.append(f"fd-coef-{fd_coef}")
+    parts.append(str(run_id))
+    return os.path.join(*parts)
+
+
+# Canonical stage selections the pipeline supports. Anything else is a typo and
+# should fail fast rather than silently skip training.
+_ALLOWED_STAGES = {"1", "2", "3", "12", "23", "123"}
+
+
+def parse_stages(stages):
+    """Parse the `stages` config flag into a set of stage numbers.
+
+    Accepts `1`, `2`, `3`, `12`, `23`, `123` (and the aliases
+    `full` / `all` for the complete pipeline). Returns e.g. `{2, 3}`.
+    """
+    s = str(stages).strip().lower()
+    if s in ("full", "all"):
+        s = "123"
+    if s not in _ALLOWED_STAGES:
+        raise ValueError(
+            f"Invalid stages={stages!r}. Allowed: 1, 2, 3, 12, 23, 123 "
+            "(or 'full' / 'all' for the complete pipeline)."
+        )
+    return {int(c) for c in s}

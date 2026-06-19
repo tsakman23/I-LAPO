@@ -228,6 +228,13 @@ class Actor(nn.Module):
             nn.Linear(shape[0], num_actions),
         )
         self.num_actions = num_actions
+        # BC latent-target standardization stats, populated during Stage-2 BC
+        # training. Registered as buffers so the actor checkpoint is
+        # self-contained: a raw-latent decoder reused later (e.g. I-LAPO-full
+        # Stage 3 loaded standalone) can invert the standardization without
+        # re-deriving it. Defaults (mean=0, std=1) make it a no-op.
+        self.register_buffer("bc_target_mean", torch.zeros(1, num_actions))
+        self.register_buffer("bc_target_std", torch.ones(1, num_actions))
         self.apply(weight_init)
 
     def forward(self, obs):

@@ -18,7 +18,15 @@ from tqdm import trange, tqdm
 from sklearn.metrics import r2_score
 
 from src.augmentations import Augmenter
-from src.checkpoint import load_model, save_model, save_run_config, stage_path
+from src.checkpoint import (
+    dataset_tag,
+    load_model,
+    parse_stages,
+    run_checkpoint_dir,
+    save_model,
+    save_run_config,
+    stage_path,
+)
 from src.configs import BCConfig, DecoderConfig, LAOMConfigBase
 from src.nn import ActionDecoder, Actor, LAOMWithLabels
 from src.scheduler import linear_annealing_with_warmup
@@ -54,11 +62,20 @@ class Config:
     name: str = "laom-labels"
     seed: int = 0
 
-    save_checkpoints: bool = False
+    save_checkpoints: bool = True
     checkpoint_dir: str = "checkpoints"
-    # path to a saved Stage-1 LAM checkpoint; if set, skip Stage 1 and run only
-    # Stage 2 (BC) + Stage 3 (decoder). Lets ablations reuse the ~14h LAM.
+    # which stages of the pipeline to run: "1", "2", "3", "12", "23", "123"
+    # (or "full"). Default runs the full pipeline. A stage that is run but whose
+    # input is not produced by an earlier run stage is loaded from the matching
+    # resume_*_from path below.
+    stages: str = "123"
+    # path to a saved Stage-1 LAM checkpoint; loaded when Stage 1 is skipped but a
+    # later stage needs it (also: if set, Stage 1 is loaded instead of retrained).
+    # Lets ablations reuse the ~14h LAM.
     resume_lam_from: Optional[str] = None
+    # path to a saved Stage-2 actor checkpoint; loaded when running Stage 3 without
+    # Stage 2 (e.g. stages="3").
+    resume_actor_from: Optional[str] = None
 
     lapo: LAOMConfig = field(default_factory=LAOMConfig)
     bc: BCConfig = field(default_factory=BCConfig)
@@ -589,8 +606,26 @@ def train_act_decoder(actor: Actor, config: DecoderConfig, bc_config: BCConfig):
     return action_decoder
 
 
+def _resume(path, what):
+    """Load a prerequisite checkpoint, failing fast with a clear message if the
+    matching resume path was not provided for the requested stage selection."""
+    if path is None:
+        raise ValueError(
+            f"This stage selection needs {what}, but no checkpoint path was given."
+        )
+    model, _ = load_model(path, map_location=DEVICE, eval_mode=True)
+    return model
+
+
 @pyrallis.wrap()
 def train(config: Config):
+    stages = parse_stages(config.stages)
+    # A provided LAM path means "load Stage 1, don't retrain it" even if Stage 1
+    # is in `stages` (preserves the resume_lam_from workflow).
+    run_s1 = (1 in stages) and (config.resume_lam_from is None)
+    run_s2 = 2 in stages
+    run_s3 = 3 in stages
+
     tags = []
     data_path_lower = config.lapo.data_path.lower()
     for env_name in ("cheetah", "hopper", "walker"):
@@ -601,6 +636,7 @@ def train(config: Config):
             f"seed={config.seed}",
             f"labeled_loss_coef={config.lapo.labeled_loss_coef}",
             f"la_dim={config.lapo.latent_action_dim}",
+            f"stages={''.join(str(s) for s in sorted(stages))}",
         ]
     )
     run = wandb.init(
@@ -613,27 +649,48 @@ def train(config: Config):
     )
     set_seed(config.seed)
     print(f"Device: {DEVICE}")
+
+    # Structured checkpoint tree:
+    #   checkpoints/{dataset}/laom-labels-{d_z}/seed-{seed}/{wandb_id}
+    run_dir = run_checkpoint_dir(
+        config.checkpoint_dir,
+        dataset=dataset_tag(config.lapo.data_path),
+        model=f"laom-labels-{config.lapo.latent_action_dim}",
+        seed=config.seed,
+        run_id=run.id,
+    )
     if config.save_checkpoints:
-        save_run_config(config.checkpoint_dir, config.name, config)
-    # stage 1: pretraining lapo on unlabeled dataset (or reuse a saved LAM)
-    if config.resume_lam_from is not None:
-        print(f"Resuming: loading Stage-1 LAM from {config.resume_lam_from} (skipping Stage 1)")
-        lapo, _ = load_model(config.resume_lam_from, map_location=DEVICE, eval_mode=True)
-    else:
+        save_run_config(run_dir, config)
+        print(f"Running stages {sorted(stages)}; checkpoints -> {run_dir}")
+
+    lapo, actor, action_decoder = None, None, None
+
+    # stage 1: pretrain lapo on the unlabeled dataset (or load a saved LAM).
+    if run_s1:
         lapo = train_laom(config=config.lapo)
         if config.save_checkpoints:
-            save_model(stage_path(config.checkpoint_dir, config.name, "stage1_lam.pt"), lapo)
-            print(f"Saved stage 1 LAM to {stage_path(config.checkpoint_dir, config.name, 'stage1_lam.pt')}")
-    # stage 2: pretraining bc on latent actions
-    actor = train_bc(lam=lapo, config=config.bc)
-    if config.save_checkpoints:
-        save_model(stage_path(config.checkpoint_dir, config.name, "stage2_actor.pt"), actor)
-        print(f"Saved stage 2 actor to {stage_path(config.checkpoint_dir, config.name, 'stage2_actor.pt')}")
-    # stage 3: finetune on labeles ground-truth actions
-    action_decoder = train_act_decoder(actor=actor, config=config.decoder, bc_config=config.bc)
-    if config.save_checkpoints:
-        save_model(stage_path(config.checkpoint_dir, config.name, "stage3_decoder.pt"), action_decoder)
-        print(f"Saved stage 3 decoder to {stage_path(config.checkpoint_dir, config.name, 'stage3_decoder.pt')}")
+            save_model(stage_path(run_dir, "stage1_lam.pt"), lapo)
+            print(f"Saved stage 1 LAM to {stage_path(run_dir, 'stage1_lam.pt')}")
+    elif run_s2:
+        lapo = _resume(config.resume_lam_from, "a Stage-1 LAM (set --resume_lam_from)")
+        print(f"Loaded Stage-1 LAM from {config.resume_lam_from}")
+
+    # stage 2: pretrain bc on latent actions (or load a saved actor for stage 3).
+    if run_s2:
+        actor = train_bc(lam=lapo, config=config.bc)
+        if config.save_checkpoints:
+            save_model(stage_path(run_dir, "stage2_actor.pt"), actor)
+            print(f"Saved stage 2 actor to {stage_path(run_dir, 'stage2_actor.pt')}")
+    elif run_s3:
+        actor = _resume(config.resume_actor_from, "a Stage-2 actor (set --resume_actor_from)")
+        print(f"Loaded Stage-2 actor from {config.resume_actor_from}")
+
+    # stage 3: finetune on labeled ground-truth actions.
+    if run_s3:
+        action_decoder = train_act_decoder(actor=actor, config=config.decoder, bc_config=config.bc)
+        if config.save_checkpoints:
+            save_model(stage_path(run_dir, "stage3_decoder.pt"), action_decoder)
+            print(f"Saved stage 3 decoder to {stage_path(run_dir, 'stage3_decoder.pt')}")
 
     run.finish()
     return lapo, actor, action_decoder
