@@ -346,8 +346,11 @@ def train_laom(config: LAOMConfig):
                 
             wandb.log(log_data)
             
-            # Occasionally log decoder Jacobian condition number
-            if config.ires_fd_coef > 0 and (total_iterations % (config.ires_fd_every * 10) == 0):
+            # Occasionally log decoder Jacobian condition number. kappa is a
+            # property of the decoder Jacobian, independent of the FD regulariser,
+            # so log it even when ires_fd_coef == 0 (e.g. the FD-ablation baseline)
+            # to keep kappa available for every run.
+            if total_iterations % (config.ires_fd_every * 10) == 0:
                 # Use current batch of labeled latent actions as z_batch
                 log_decoder_condition(lapo.true_actions_head, latent_action_labeled) # type: ignore
 
@@ -662,8 +665,8 @@ def train_act_decoder_inv(actor: Actor, lam: LAOMWithLabelsInvertible, config: C
 # inv_stage -> model name for the structured checkpoint tree:
 #   0 = Stage-1 i-ResNet decoder reused in Stage 3 (I-LAPO-full)
 #   1 = i-ResNet Stage 1, fresh MLP Stage 3 (I-LAPO-S1)
-#   2 = fresh i-ResNet trained at Stage 3 (I-LAPO-S3)
-_INV_MODEL_NAMES = {0: "i-lapo-full", 1: "i-lapo-s1", 2: "i-lapo-s3"}
+#   3 = linear Stage 1, fresh i-ResNet trained at Stage 3 (I-LAPO-S3)
+_INV_MODEL_NAMES = {0: "i-lapo-full", 1: "i-lapo-s1", 3: "i-lapo-s3"}
 
 
 def _resume(path, what):

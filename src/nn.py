@@ -726,8 +726,13 @@ class LAOMWithLabelsInvertible(LAOMWithLabels):
         )
         
         # Checks
+        # inv_stage selects where the i-ResNet lives (matches _INV_MODEL_NAMES in
+        # train_laom_labels_inv.py):
+        #   0 = i-lapo-full: i-ResNet Stage-1 head, reused as the Stage-3 decoder
+        #   1 = i-lapo-s1:   i-ResNet Stage-1 head, fresh MLP Stage-3 decoder
+        #   3 = i-lapo-s3:   linear Stage-1 head, fresh i-ResNet Stage-3 decoder
         if inv_stage not in [0, 1, 3]:
-            raise ValueError(f"inv_stage must be one of [0, 1, 3], got {inv_stage}. Select 0 for full invertibility, 1 for Stage 1, and 3 for Stage 3 (0 default).")
+            raise ValueError(f"inv_stage must be one of [0, 1, 3], got {inv_stage}. Select 0 for full invertibility (i-ResNet Stage 1 reused in Stage 3), 1 for i-ResNet Stage 1 + fresh MLP Stage 3, and 3 for linear Stage 1 + fresh i-ResNet Stage 3 (0 default).")
         
         if inv_stage in [0, 1]:
             if latent_act_dim != true_act_dim:
