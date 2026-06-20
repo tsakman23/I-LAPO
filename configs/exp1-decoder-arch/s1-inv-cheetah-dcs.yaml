@@ -14,8 +14,6 @@ lapo:
   ires_inv_max_iter: 100
   ires_fd_coef: 1e-4
   ires_fd_every: 10
-  cycle_loss_coef: 0
-  cycle_loss_every: 100
   
   num_epochs: 10
   batch_size: 512

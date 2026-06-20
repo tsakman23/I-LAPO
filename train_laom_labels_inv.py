@@ -61,8 +61,6 @@ class LAOMConfig(LAOMConfigBase):
     ires_n_power_iter: int = 10
     ires_coeff: float = 0.8
     ires_inv_max_iter: int = 100
-    cycle_loss_coef: float = 0.0    # REMOVED, no cycle loss gradients, only kept as metric
-    cycle_loss_every: int = 100
     ires_fd_coef: float = 1e-4      # FD reg strength
     ires_fd_every: int = 10         # apply FD penalty every N iters
 
@@ -274,30 +272,14 @@ def train_laom(config: LAOMConfig):
                 pred_action_decoder = lapo.true_actions_head(latent_action_labeled.float())
                 
                 loss1 = F.mse_loss(pred_action_decoder, label_actions)
-                
-                # Cycle consistency loss: f^{-1}(f(z)) ~ z,
-                # WARN: NO GRADIENTS THROUGH THIS TO AVOID EXPLODING/VANISHING GRADIENTS FROM FIXED-POINT ITERATION (Behrmann 2019/2021)
-                with torch.no_grad():
-                    do_cycle = config.cycle_loss_every <= 0 or (
-                        total_iterations % config.cycle_loss_every == 0
-                    )
-                    if do_cycle and hasattr(lapo.true_actions_head, 'inverse'): # Guard for ablation 1
-                        z_reconstructed = lapo.true_actions_head.inverse(
-                            pred_action_decoder,
-                            max_iter=config.ires_inv_max_iter,
-                        )
-                        cycle_error = F.mse_loss(z_reconstructed, latent_action_labeled.detach())
-                    else:
-                        cycle_error = torch.tensor(0.0, device=DEVICE)
-            
+
             # FD regulariser on decoder (outside autocast, fp32):
             fd_penalty = torch.tensor(0.0, device=DEVICE)
             if config.inv_stage == 0 or config.inv_stage == 1:
                 if config.ires_fd_coef > 0 and (total_iterations % config.ires_fd_every == 0):
                     fd_penalty = fd_regulariser(lapo.true_actions_head, latent_action_labeled) # type: ignore
-            
-            # Total loss: no cycle term
-            # Plus optional FD penalty
+
+            # Total loss: labeled loss plus optional FD penalty
             loss = loss0 + config.labeled_loss_coef * loss1 + config.ires_fd_coef * fd_penalty
 
             optim.zero_grad(set_to_none=True)
@@ -356,7 +338,6 @@ def train_laom(config: LAOMConfig):
                 "lapo/latent_act_norm": torch.norm(latent_action, p=2, dim=-1).mean().item(),
                 "lapo/epoch": epoch,
                 "lapo/total_steps": total_iterations,
-                "lapo/cycle_consistency_error": cycle_error.item(),
             }
             if act_probe_r2 is not None:
                 log_data["lapo/action_probe_r2"] = act_probe_r2
