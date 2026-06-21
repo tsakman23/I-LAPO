@@ -1,12 +1,12 @@
 """Lightweight checkpointing for the LAOM / I-LAPO pipeline.
 
 Each training stage produces a self-describing checkpoint: the model
-``state_dict`` together with the class name and the exact constructor kwargs
+`state_dict` together with the class name and the exact constructor kwargs
 used to build it. This lets downstream consumers (e.g. SAC fine-tuning, or
 re-running stages 2/3 without repeating the ~14h stage-1 LAM training) rebuild
 the module from disk without re-deriving dataset dimensions.
 
-Construction sites attach their kwargs to the module as ``model._build_kwargs``
+Construction sites attach their kwargs to the module as `model._build_kwargs`
 so saving stays DRY with the code that actually builds the model.
 """
 
@@ -43,10 +43,10 @@ def save_model(path, model, build_kwargs=None, extra=None):
     """Save a model's state_dict plus enough metadata to rebuild it.
 
     Args:
-        path: destination ``.pt`` file.
-        model: an ``nn.Module``. If ``build_kwargs`` is None we read it from
-            ``model._build_kwargs`` (attached at construction time).
-        build_kwargs: constructor kwargs used to build ``model``.
+        path: destination `.pt` file.
+        model: an `nn.Module`. If `build_kwargs` is None we read it from
+            `model._build_kwargs` (attached at construction time).
+        build_kwargs: constructor kwargs used to build `model`.
         extra: optional dict of additional metadata to store.
     """
     if build_kwargs is None:
@@ -69,9 +69,9 @@ def save_model(path, model, build_kwargs=None, extra=None):
 
 
 def load_model(path, map_location=None, eval_mode=True):
-    """Rebuild a model from a checkpoint written by ``save_model``.
+    """Rebuild a model from a checkpoint written by `save_model`.
 
-    Returns ``(model, payload)`` where ``payload`` carries the metadata.
+    Returns `(model, payload)` where `payload` carries the metadata.
     """
     payload = torch.load(path, map_location=map_location, weights_only=False)
     model_class = payload["model_class"]
